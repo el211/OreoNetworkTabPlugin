@@ -1,0 +1,8 @@
+{
+  "id": "oreo-network-tab",
+  "name": "OreoNetworkTab",
+  "version": "1.0.0",
+  "description": "Global network tablist formatter for Oreo Studios",
+  "authors": ["Elias"],
+  "main": "fr.elias.oreonetworktab.OreoNetworkTabPlugin"
+}
