@@ -15,6 +15,10 @@ import com.velocitypowered.api.util.GameProfile;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.slf4j.Logger;
+import com.velocitypowered.api.event.player.ServerPreConnectEvent;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
+import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 
 import java.util.Collection;
 import java.util.Optional;
@@ -29,6 +33,10 @@ public class OreoNetworkTabPlugin {
 
     private final ProxyServer proxy;
     private final Logger logger;
+    private final MiniMessage mm = MiniMessage.miniMessage();
+
+    // Optional: track previous server for switch messages
+    private final java.util.Map<java.util.UUID, String> lastServer = new java.util.concurrent.ConcurrentHashMap<>();
 
     @Inject
     public OreoNetworkTabPlugin(ProxyServer proxy, Logger logger) {
@@ -45,16 +53,77 @@ public class OreoNetworkTabPlugin {
     @Subscribe
     public void onJoin(PostLoginEvent event) {
         updateAllTabs();
+
+        // --- Global join msg (network-level) ---
+        // if you use a config, replace these with config reads
+        boolean enabled = true;
+        if (!enabled) return;
+
+        Player p = event.getPlayer();
+        String joinFmt = "<gradient:#FF1493:#00FF7F>+</gradient> <white>{name}</white> <gray>joined the network</gray>";
+
+        broadcastMini(joinFmt,
+                Placeholder.parsed("name", p.getUsername())
+        );
     }
+
 
     @Subscribe
     public void onQuit(DisconnectEvent event) {
         updateAllTabs();
+
+        boolean enabled = true;
+        if (!enabled) return;
+
+        Player p = event.getPlayer();
+        String quitFmt = "<gradient:#FF1493:#00FF7F>-</gradient> <white>{name}</white> <gray>left the network</gray>";
+
+        broadcastMini(quitFmt,
+                Placeholder.parsed("name", p.getUsername())
+        );
+
+        lastServer.remove(p.getUniqueId());
+    }
+
+
+    @Subscribe
+    public void onPreConnect(ServerPreConnectEvent event) {
+        Player p = event.getPlayer();
+        String from = p.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse("unknown");
+        lastServer.put(p.getUniqueId(), from);
     }
 
     @Subscribe
     public void onServerSwitch(ServerPostConnectEvent event) {
         updateAllTabs();
+
+        boolean switchEnabled = false;
+        if (!switchEnabled) return;
+
+        Player p = event.getPlayer();
+        String to = p.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse("unknown");
+        String from = lastServer.getOrDefault(p.getUniqueId(), "unknown");
+
+        // Avoid showing "unknown -> to" on first join
+        if ("unknown".equalsIgnoreCase(from)) return;
+        if (from.equalsIgnoreCase(to)) return;
+
+        String fmt = "<gray>{name}</gray> <dark_gray>»</dark_gray> <white>{to}</white>";
+        broadcastMini(fmt,
+                Placeholder.parsed("name", p.getUsername()),
+                Placeholder.parsed("to", to),
+                Placeholder.parsed("from", from)
+        );
+    }
+
+    private void broadcastMini(String mini) {
+        Component c = mm.deserialize(mini);
+        proxy.sendMessage(c);
+    }
+
+    private void broadcastMini(String mini, TagResolver... resolvers) {
+        Component c = mm.deserialize(mini, resolvers);
+        proxy.sendMessage(c);
     }
 
     /**
