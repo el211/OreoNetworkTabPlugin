@@ -5,8 +5,10 @@ import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.PostLoginEvent;
 import com.velocitypowered.api.event.player.ServerPostConnectEvent;
+import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.plugin.Plugin;
+import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.player.TabList;
@@ -14,14 +16,16 @@ import com.velocitypowered.api.proxy.player.TabListEntry;
 import com.velocitypowered.api.util.GameProfile;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
-import org.slf4j.Logger;
-import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
+import org.slf4j.Logger;
 
+import java.nio.file.Path;
 import java.util.Collection;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Plugin(
         id = "oreo-network-tab",
@@ -33,83 +37,106 @@ public class OreoNetworkTabPlugin {
 
     private final ProxyServer proxy;
     private final Logger logger;
-    private final MiniMessage mm = MiniMessage.miniMessage();
+    private final Path dataDirectory;
 
-    // Optional: track previous server for switch messages
-    private final java.util.Map<java.util.UUID, String> lastServer = new java.util.concurrent.ConcurrentHashMap<>();
+    private final MiniMessage mm = MiniMessage.miniMessage();
+    private Lang lang;
+
+    // Track previous server for switch messages
+    private final java.util.Map<UUID, String> lastServer = new ConcurrentHashMap<>();
 
     @Inject
-    public OreoNetworkTabPlugin(ProxyServer proxy, Logger logger) {
+    public OreoNetworkTabPlugin(ProxyServer proxy, Logger logger, @DataDirectory Path dataDirectory) {
         this.proxy = proxy;
         this.logger = logger;
+        this.dataDirectory = dataDirectory;
     }
 
     @Subscribe
     public void onProxyInit(ProxyInitializeEvent event) {
-        logger.info("[OreoNetworkTab] Initializing global tab plugin...");
-        updateAllTabs();
+        this.lang = new Lang(logger, dataDirectory);
+        this.lang.load();
+
+        logger.info("[OreoNetworkTab] Initialized. Data folder: {}", dataDirectory.toAbsolutePath());
+
+        if (isTabEnabled()) {
+            updateAllTabs();
+        } else {
+            logger.info("[OreoNetworkTab] TAB handling disabled (tab.enabled: false).");
+        }
     }
 
     @Subscribe
     public void onJoin(PostLoginEvent event) {
-        updateAllTabs();
-
-        // --- Global join msg (network-level) ---
-        // if you use a config, replace these with config reads
-        boolean enabled = true;
-        if (!enabled) return;
+        if (isTabEnabled()) updateAllTabs();
+        if (lang == null || !lang.getBool("messages.join.enabled", true)) return;
 
         Player p = event.getPlayer();
-        String joinFmt = "<gradient:#FF1493:#00FF7F>+</gradient> <white>{name}</white> <gray>joined the network</gray>";
+        String joinFmt = lang.getMini(
+                "messages.join.format",
+                "<gradient:#FF1493:#00FF7F>+</gradient> <white>{name}</white> <gray>joined the network</gray>"
+        );
 
-        broadcastMini(joinFmt,
+        broadcastMini(braceToMiniPlaceholders(joinFmt),
                 Placeholder.parsed("name", p.getUsername())
         );
     }
 
-
     @Subscribe
     public void onQuit(DisconnectEvent event) {
-        updateAllTabs();
-
-        boolean enabled = true;
-        if (!enabled) return;
+        if (isTabEnabled()) updateAllTabs();
 
         Player p = event.getPlayer();
-        String quitFmt = "<gradient:#FF1493:#00FF7F>-</gradient> <white>{name}</white> <gray>left the network</gray>";
+        if (lang != null && lang.getBool("messages.quit.enabled", true)) {
+            String quitFmt = lang.getMini(
+                    "messages.quit.format",
+                    "<gradient:#FF1493:#00FF7F>-</gradient> <white>{name}</white> <gray>left the network</gray>"
+            );
 
-        broadcastMini(quitFmt,
-                Placeholder.parsed("name", p.getUsername())
-        );
+            broadcastMini(braceToMiniPlaceholders(quitFmt),
+                    Placeholder.parsed("name", p.getUsername())
+            );
+        }
 
         lastServer.remove(p.getUniqueId());
     }
 
-
     @Subscribe
     public void onPreConnect(ServerPreConnectEvent event) {
         Player p = event.getPlayer();
-        String from = p.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse("unknown");
+        String unknown = getUnknownServerName();
+
+        String from = p.getCurrentServer()
+                .map(s -> s.getServerInfo().getName())
+                .orElse(unknown);
+
         lastServer.put(p.getUniqueId(), from);
     }
 
     @Subscribe
     public void onServerSwitch(ServerPostConnectEvent event) {
-        updateAllTabs();
-
-        boolean switchEnabled = false;
-        if (!switchEnabled) return;
+        if (isTabEnabled()) updateAllTabs();
+        if (lang == null || !lang.getBool("messages.switch.enabled", false)) return;
 
         Player p = event.getPlayer();
-        String to = p.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse("unknown");
-        String from = lastServer.getOrDefault(p.getUniqueId(), "unknown");
+        String unknown = getUnknownServerName();
 
-        // Avoid showing "unknown -> to" on first join
-        if ("unknown".equalsIgnoreCase(from)) return;
+        String to = p.getCurrentServer()
+                .map(s -> s.getServerInfo().getName())
+                .orElse(unknown);
+
+        String from = lastServer.getOrDefault(p.getUniqueId(), unknown);
+
+        // Avoid "unknown -> to" on first join
+        if (from.equalsIgnoreCase(unknown)) return;
         if (from.equalsIgnoreCase(to)) return;
 
-        String fmt = "<gray>{name}</gray> <dark_gray>»</dark_gray> <white>{to}</white>";
-        broadcastMini(fmt,
+        String fmt = lang.getMini(
+                "messages.switch.format",
+                "<gray>{name}</gray> <dark_gray>»</dark_gray> <white>{to}</white>"
+        );
+
+        broadcastMini(braceToMiniPlaceholders(fmt),
                 Placeholder.parsed("name", p.getUsername()),
                 Placeholder.parsed("to", to),
                 Placeholder.parsed("from", from)
@@ -127,17 +154,27 @@ public class OreoNetworkTabPlugin {
     }
 
     /**
-     * Met à jour le TAB de tous les joueurs :
-     * - clearAll() sur chaque tablist
-     * - rajoute une entrée pour chaque joueur du réseau
+     * Converts {name}/{to}/{from} placeholders (YAML style) into MiniMessage placeholders (<name>/<to>/<from>).
+     */
+    private String braceToMiniPlaceholders(String s) {
+        if (s == null || s.isEmpty()) return s;
+        return s.replace("{name}", "<name>")
+                .replace("{to}", "<to>")
+                .replace("{from}", "<from>");
+    }
+
+    /**
+     * Updates TAB for all players. FULLY disabled when tab.enabled: false.
      */
     private void updateAllTabs() {
+        if (!isTabEnabled()) return;
+
         Collection<Player> players = proxy.getAllPlayers();
 
         for (Player viewer : players) {
             TabList tab = viewer.getTabList();
 
-            // Vide le tab du viewer
+            // This is what overrides other tab systems:
             tab.clearAll();
 
             for (Player target : players) {
@@ -147,22 +184,32 @@ public class OreoNetworkTabPlugin {
     }
 
     private void addOrUpdateEntry(Player viewer, Player target) {
+        if (!isTabEnabled()) return;
+
         TabList tab = viewer.getTabList();
 
         Optional<TabListEntry> existing = tab.getEntry(target.getUniqueId());
         existing.ifPresent(entry -> tab.removeEntry(entry.getProfile().getId()));
 
+        String unknown = getUnknownServerName();
         String serverName = target.getCurrentServer()
                 .map(conn -> conn.getServerInfo().getName())
-                .orElse("unknown");
+                .orElse(unknown);
 
-        Component displayName = Component.text()
-                .append(Component.text(target.getUsername(), NamedTextColor.WHITE))
-                .append(Component.space())
-                .append(Component.text("(", NamedTextColor.DARK_GRAY))
-                .append(Component.text(serverName, NamedTextColor.GRAY))
-                .append(Component.text(")", NamedTextColor.DARK_GRAY))
-                .build();
+        boolean showServer = lang != null && lang.getBool("tab.showServerInName", true);
+
+        Component displayName;
+        if (showServer) {
+            displayName = Component.text()
+                    .append(Component.text(target.getUsername(), NamedTextColor.WHITE))
+                    .append(Component.space())
+                    .append(Component.text("(", NamedTextColor.DARK_GRAY))
+                    .append(Component.text(serverName, NamedTextColor.GRAY))
+                    .append(Component.text(")", NamedTextColor.DARK_GRAY))
+                    .build();
+        } else {
+            displayName = Component.text(target.getUsername(), NamedTextColor.WHITE);
+        }
 
         GameProfile profile = target.getGameProfile();
         int ping = (int) Math.max(0, Math.min(Integer.MAX_VALUE, target.getPing()));
@@ -178,6 +225,13 @@ public class OreoNetworkTabPlugin {
                 .build();
 
         tab.addEntry(entry);
+    }
 
+    private boolean isTabEnabled() {
+        return lang != null && lang.getBool("tab.enabled", true);
+    }
+
+    private String getUnknownServerName() {
+        return (lang == null) ? "unknown" : lang.getString("tab.unknownServerName", "unknown");
     }
 }

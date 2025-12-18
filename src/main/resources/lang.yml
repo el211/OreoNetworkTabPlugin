@@ -1,0 +1,18 @@
+messages:
+  join:
+    enabled: true
+    format: "<gradient:#FF1493:#00FF7F>+</gradient> <white>{name}</white> <gray>joined the network</gray>"
+
+  quit:
+    enabled: true
+    format: "<gradient:#FF1493:#00FF7F>-</gradient> <white>{name}</white> <gray>left the network</gray>"
+
+  switch:
+    enabled: false
+    format: "<gray>{name}</gray> <dark_gray>»</dark_gray> <white>{to}</white>"
+
+tab:
+  enabled: true
+  showServerInName: true
+  unknownServerName: "unknown"
+
