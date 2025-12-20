@@ -1,3 +1,4 @@
+// File: src/main/java/fr/elias/oreoNetworkTabPlugin/OreoNetworkTabPlugin.java
 package fr.elias.oreoNetworkTabPlugin;
 
 import com.google.inject.Inject;
@@ -22,9 +23,7 @@ import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import org.slf4j.Logger;
 
 import java.nio.file.Path;
-import java.util.Collection;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Plugin(
@@ -43,7 +42,10 @@ public class OreoNetworkTabPlugin {
     private Lang lang;
 
     // Track previous server for switch messages
-    private final java.util.Map<UUID, String> lastServer = new ConcurrentHashMap<>();
+    private final Map<UUID, String> lastServer = new ConcurrentHashMap<>();
+
+    // Used to send "join network" only once, when player actually connects to first backend
+    private final Set<UUID> pendingFirstConnect = ConcurrentHashMap.newKeySet();
 
     @Inject
     public OreoNetworkTabPlugin(ProxyServer proxy, Logger logger, @DataDirectory Path dataDirectory) {
@@ -66,20 +68,16 @@ public class OreoNetworkTabPlugin {
         }
     }
 
+    /**
+     * NOTE:
+     * PostLoginEvent fires when the player authenticates on the proxy,
+     * but not necessarily connected to a backend yet.
+     * We mark them as "pending", and we will broadcast join once they connect to their first server.
+     */
     @Subscribe
     public void onJoin(PostLoginEvent event) {
         if (isTabEnabled()) updateAllTabs();
-        if (lang == null || !lang.getBool("messages.join.enabled", true)) return;
-
-        Player p = event.getPlayer();
-        String joinFmt = lang.getMini(
-                "messages.join.format",
-                "<gradient:#FF1493:#00FF7F>+</gradient> <white>{name}</white> <gray>joined the network</gray>"
-        );
-
-        broadcastMini(braceToMiniPlaceholders(joinFmt),
-                Placeholder.parsed("name", p.getUsername())
-        );
+        pendingFirstConnect.add(event.getPlayer().getUniqueId());
     }
 
     @Subscribe
@@ -87,6 +85,8 @@ public class OreoNetworkTabPlugin {
         if (isTabEnabled()) updateAllTabs();
 
         Player p = event.getPlayer();
+
+        // Broadcast quit network (to allowed recipients)
         if (lang != null && lang.getBool("messages.quit.enabled", true)) {
             String quitFmt = lang.getMini(
                     "messages.quit.format",
@@ -99,6 +99,7 @@ public class OreoNetworkTabPlugin {
         }
 
         lastServer.remove(p.getUniqueId());
+        pendingFirstConnect.remove(p.getUniqueId());
     }
 
     @Subscribe
@@ -116,7 +117,6 @@ public class OreoNetworkTabPlugin {
     @Subscribe
     public void onServerSwitch(ServerPostConnectEvent event) {
         if (isTabEnabled()) updateAllTabs();
-        if (lang == null || !lang.getBool("messages.switch.enabled", false)) return;
 
         Player p = event.getPlayer();
         String unknown = getUnknownServerName();
@@ -125,9 +125,29 @@ public class OreoNetworkTabPlugin {
                 .map(s -> s.getServerInfo().getName())
                 .orElse(unknown);
 
+        // 1) First server connect => fire JOIN message once (if enabled)
+        if (pendingFirstConnect.remove(p.getUniqueId())) {
+            if (lang != null && lang.getBool("messages.join.enabled", true)) {
+                String joinFmt = lang.getMini(
+                        "messages.join.format",
+                        "<gradient:#FF1493:#00FF7F>+</gradient> <white>{name}</white> <gray>joined the network</gray>"
+                );
+
+                broadcastMini(braceToMiniPlaceholders(joinFmt),
+                        Placeholder.parsed("name", p.getUsername()),
+                        Placeholder.parsed("to", to),
+                        Placeholder.parsed("from", unknown)
+                );
+            }
+            return; // do not also show switch for first connect
+        }
+
+        // 2) Switch message (optional)
+        if (lang == null || !lang.getBool("messages.switch.enabled", false)) return;
+
         String from = lastServer.getOrDefault(p.getUniqueId(), unknown);
 
-        // Avoid "unknown -> to" on first join
+        // Avoid useless switches
         if (from.equalsIgnoreCase(unknown)) return;
         if (from.equalsIgnoreCase(to)) return;
 
@@ -143,14 +163,46 @@ public class OreoNetworkTabPlugin {
         );
     }
 
+    /**
+     * Broadcast to all players on the proxy (cross-server),
+     * optionally excluding recipients that are currently on serversException list.
+     */
     private void broadcastMini(String mini) {
         Component c = mm.deserialize(mini);
-        proxy.sendMessage(c);
+        broadcastToAllowedPlayers(c);
     }
 
     private void broadcastMini(String mini, TagResolver... resolvers) {
         Component c = mm.deserialize(mini, resolvers);
-        proxy.sendMessage(c);
+        broadcastToAllowedPlayers(c);
+    }
+
+    private void broadcastToAllowedPlayers(Component component) {
+        for (Player pl : proxy.getAllPlayers()) {
+            if (isRecipientExcepted(pl)) continue;
+            pl.sendMessage(component);
+        }
+    }
+
+    /**
+     * Recipients filter:
+     * If "serversException" contains the player's current server, they do NOT receive network messages.
+     * Example use-case: do not spam lobby with network join/quit.
+     */
+    private boolean isRecipientExcepted(Player recipient) {
+        if (lang == null) return false;
+
+        List<String> except = lang.getStringList("serversException");
+        if (except == null || except.isEmpty()) return false;
+
+        String srv = recipient.getCurrentServer()
+                .map(cs -> cs.getServerInfo().getName())
+                .orElse(getUnknownServerName());
+
+        for (String s : except) {
+            if (s != null && s.equalsIgnoreCase(srv)) return true;
+        }
+        return false;
     }
 
     /**

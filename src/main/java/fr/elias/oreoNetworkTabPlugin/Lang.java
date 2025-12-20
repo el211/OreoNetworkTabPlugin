@@ -83,6 +83,16 @@ public final class Lang {
 
         Files.writeString(langFile, content);
     }
+    public java.util.List<String> getStringList(String path) {
+        CommentedConfigurationNode n = node(path);
+        if (n == null || n.virtual()) return java.util.List.of();
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (CommentedConfigurationNode child : n.childrenList()) {
+            String s = child.getString();
+            if (s != null && !s.isBlank()) out.add(s);
+        }
+        return out;
+    }
 
     public boolean getBool(String path, boolean def) {
         return node(path).getBoolean(def);

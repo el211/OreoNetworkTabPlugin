@@ -11,8 +11,13 @@ messages:
     enabled: false
     format: "<gray>{name}</gray> <dark_gray>»</dark_gray> <white>{to}</white>"
 
+# NEW:
+# Players who are currently on one of these servers will NOT receive join/quit/switch messages.
+# Example: exclude lobby players from network spam.
+serversException:
+  - "lobby"
+
 tab:
   enabled: true
   showServerInName: true
   unknownServerName: "unknown"
-
