@@ -8,6 +8,7 @@ import com.velocitypowered.api.event.connection.PostLoginEvent;
 import com.velocitypowered.api.event.player.ServerPostConnectEvent;
 import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
+import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.Player;
@@ -37,6 +38,7 @@ public class OreoNetworkTabPlugin {
     private final ProxyServer proxy;
     private final Logger logger;
     private final Path dataDirectory;
+    private ShardTransferHandler shardHandler;
 
     private final MiniMessage mm = MiniMessage.miniMessage();
     private Lang lang;
@@ -61,13 +63,56 @@ public class OreoNetworkTabPlugin {
 
         logger.info("[OreoNetworkTab] Initialized. Data folder: {}", dataDirectory.toAbsolutePath());
 
+        // Initialize seamless shard transfer handler (configurable!)
+        if (lang.getBool("sharding.enabled", false)) {
+            try {
+                String redisHost = lang.getString("sharding.redis.host", "localhost");
+                int redisPort = lang.getInt("sharding.redis.port", 6379);
+                String redisPassword = lang.getString("sharding.redis.password", "");
+                int preloadDelay = lang.getInt("sharding.preloadDelay", 100);
+
+                this.shardHandler = new ShardTransferHandler(
+                        proxy,
+                        logger,
+                        this,           // plugin
+                        redisHost,      // String
+                        redisPort,      // int
+                        redisPassword.isEmpty() ? null : redisPassword,  // String
+                        preloadDelay    // int
+                );
+
+                // Register the shard transfer event listener
+                proxy.getEventManager().register(this, shardHandler);
+
+                logger.info("[ShardTransfer] Seamless shard transfer enabled!");
+                logger.info("[ShardTransfer] Connected to Redis at {}:{}", redisHost, redisPort);
+                logger.info("[ShardTransfer] Pre-load delay: {}ms", preloadDelay);
+            } catch (Exception e) {
+                logger.error("[ShardTransfer] Failed to initialize - seamless transfers DISABLED", e);
+                logger.error("[ShardTransfer] Players will see loading screens on shard transfers");
+            }
+        } else {
+            logger.info("[ShardTransfer] Disabled in config (sharding.enabled: false)");
+            logger.info("[ShardTransfer] Players will see loading screens on shard transfers");
+        }
+
         if (isTabEnabled()) {
             updateAllTabs();
         } else {
             logger.info("[OreoNetworkTab] TAB handling disabled (tab.enabled: false).");
         }
     }
+    @Subscribe
+    public void onProxyShutdown(ProxyShutdownEvent event) {
+        logger.info("[OreoNetworkTab] Shutting down...");
 
+        // Shutdown shard transfer handler if it was initialized
+        if (shardHandler != null) {
+            shardHandler.shutdown();
+        }
+
+        logger.info("[OreoNetworkTab] Shutdown complete");
+    }
     /**
      * NOTE:
      * PostLoginEvent fires when the player authenticates on the proxy,

@@ -48,7 +48,9 @@ public final class Lang {
             this.root = CommentedConfigurationNode.root();
         }
     }
-
+    public int getInt(String path, int def) {
+        return node(path).getInt(def);
+    }
     /**
      * @return true if copied from jar resource, false if resource was not found
      */
@@ -79,7 +81,17 @@ public final class Lang {
                         "tab:\n" +
                         "  enabled: true\n" +
                         "  showServerInName: true\n" +
-                        "  unknownServerName: \"unknown\"\n";
+                        "  unknownServerName: \"unknown\"\n" +
+                        "\n" +
+                        "# Seamless shard transfers (like Donut SMP)\n" +
+                        "sharding:\n" +
+                        "  enabled: true\n" +
+                        "  redis:\n" +
+                        "    host: \"88.99.150.35\"\n" +
+                        "    port: 25577\n" +
+                        "    password: \"ELIASps4\"\n" +
+                        "  # How long to wait for chunks to pre-load (milliseconds)\n" +
+                        "  preloadDelay: 100\n";
 
         Files.writeString(langFile, content);
     }

@@ -21,3 +21,13 @@ tab:
   enabled: true
   showServerInName: true
   unknownServerName: "unknown"
+
+# Seamless shard transfers (like Donut SMP)
+sharding:
+  enabled: true
+  redis:
+    host: "88.99.150.35"
+    port: 25577
+    password: "ELIASps4"
+  # How long to wait for chunks to pre-load (milliseconds)
+  preloadDelay: 100
