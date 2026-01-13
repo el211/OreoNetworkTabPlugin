@@ -43,10 +43,8 @@ public class OreoNetworkTabPlugin {
     private final MiniMessage mm = MiniMessage.miniMessage();
     private Lang lang;
 
-    // Track previous server for switch messages
     private final Map<UUID, String> lastServer = new ConcurrentHashMap<>();
 
-    // Used to send "join network" only once, when player actually connects to first backend
     private final Set<UUID> pendingFirstConnect = ConcurrentHashMap.newKeySet();
 
     @Inject
@@ -63,7 +61,6 @@ public class OreoNetworkTabPlugin {
 
         logger.info("[OreoNetworkTab] Initialized. Data folder: {}", dataDirectory.toAbsolutePath());
 
-        // Initialize seamless shard transfer handler (configurable!)
         if (lang.getBool("sharding.enabled", false)) {
             try {
                 String redisHost = lang.getString("sharding.redis.host", "localhost");
@@ -74,14 +71,13 @@ public class OreoNetworkTabPlugin {
                 this.shardHandler = new ShardTransferHandler(
                         proxy,
                         logger,
-                        this,           // plugin
-                        redisHost,      // String
-                        redisPort,      // int
+                        this,
+                        redisHost,
+                        redisPort,
                         redisPassword.isEmpty() ? null : redisPassword,  // String
-                        preloadDelay    // int
+                        preloadDelay
                 );
 
-                // Register the shard transfer event listener
                 proxy.getEventManager().register(this, shardHandler);
 
                 logger.info("[ShardTransfer] Seamless shard transfer enabled!");
@@ -106,19 +102,13 @@ public class OreoNetworkTabPlugin {
     public void onProxyShutdown(ProxyShutdownEvent event) {
         logger.info("[OreoNetworkTab] Shutting down...");
 
-        // Shutdown shard transfer handler if it was initialized
         if (shardHandler != null) {
             shardHandler.shutdown();
         }
 
         logger.info("[OreoNetworkTab] Shutdown complete");
     }
-    /**
-     * NOTE:
-     * PostLoginEvent fires when the player authenticates on the proxy,
-     * but not necessarily connected to a backend yet.
-     * We mark them as "pending", and we will broadcast join once they connect to their first server.
-     */
+
     @Subscribe
     public void onJoin(PostLoginEvent event) {
         if (isTabEnabled()) updateAllTabs();
@@ -184,15 +174,13 @@ public class OreoNetworkTabPlugin {
                         Placeholder.parsed("from", unknown)
                 );
             }
-            return; // do not also show switch for first connect
+            return;
         }
 
-        // 2) Switch message (optional)
         if (lang == null || !lang.getBool("messages.switch.enabled", false)) return;
 
         String from = lastServer.getOrDefault(p.getUniqueId(), unknown);
 
-        // Avoid useless switches
         if (from.equalsIgnoreCase(unknown)) return;
         if (from.equalsIgnoreCase(to)) return;
 
@@ -208,10 +196,7 @@ public class OreoNetworkTabPlugin {
         );
     }
 
-    /**
-     * Broadcast to all players on the proxy (cross-server),
-     * optionally excluding recipients that are currently on serversException list.
-     */
+
     private void broadcastMini(String mini) {
         Component c = mm.deserialize(mini);
         broadcastToAllowedPlayers(c);
@@ -229,11 +214,7 @@ public class OreoNetworkTabPlugin {
         }
     }
 
-    /**
-     * Recipients filter:
-     * If "serversException" contains the player's current server, they do NOT receive network messages.
-     * Example use-case: do not spam lobby with network join/quit.
-     */
+
     private boolean isRecipientExcepted(Player recipient) {
         if (lang == null) return false;
 
@@ -250,9 +231,7 @@ public class OreoNetworkTabPlugin {
         return false;
     }
 
-    /**
-     * Converts {name}/{to}/{from} placeholders (YAML style) into MiniMessage placeholders (<name>/<to>/<from>).
-     */
+
     private String braceToMiniPlaceholders(String s) {
         if (s == null || s.isEmpty()) return s;
         return s.replace("{name}", "<name>")
@@ -260,9 +239,7 @@ public class OreoNetworkTabPlugin {
                 .replace("{from}", "<from>");
     }
 
-    /**
-     * Updates TAB for all players. FULLY disabled when tab.enabled: false.
-     */
+
     private void updateAllTabs() {
         if (!isTabEnabled()) return;
 

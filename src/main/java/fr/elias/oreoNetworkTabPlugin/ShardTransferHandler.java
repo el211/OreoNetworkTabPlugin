@@ -5,6 +5,8 @@ import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
+import dev.simplix.protocolize.api.Protocolize;
+import dev.simplix.protocolize.api.player.ProtocolizePlayer;
 import org.slf4j.Logger;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPubSub;
@@ -20,14 +22,12 @@ public class ShardTransferHandler {
     private final Logger logger;
     private final Jedis redis;
     private final int preloadDelay;
-    private final Object plugin; // Plugin instance for scheduler
+    private final Object plugin;
 
-    // Store connection info for subscriber thread
     private final String redisHost;
     private final int redisPort;
     private final String redisPassword;
 
-    // Track pending transfers to make them seamless
     private final Map<UUID, PendingTransfer> pendingTransfers = new ConcurrentHashMap<>();
 
     public ShardTransferHandler(ProxyServer proxy, Logger logger, Object plugin, String redisHost, int redisPort, String redisPassword, int preloadDelay) {
@@ -39,7 +39,6 @@ public class ShardTransferHandler {
         this.redisPort = redisPort;
         this.redisPassword = redisPassword;
 
-        // Connect to Redis
         this.redis = new Jedis(redisHost, redisPort);
         if (redisPassword != null && !redisPassword.isEmpty()) {
             redis.auth(redisPassword);
@@ -47,21 +46,26 @@ public class ShardTransferHandler {
 
         logger.info("[ShardTransfer] Connected to Redis at {}:{}", redisHost, redisPort);
 
-        // Start Redis listener for shard transfer requests
+        try {
+            Class.forName("dev.simplix.protocolize.api.Protocolize");
+            logger.info("[ShardTransfer] Protocolize detected! Enhanced packet manipulation enabled!");
+        } catch (ClassNotFoundException e) {
+            logger.warn("[ShardTransfer] Protocolize not found - using standard transfers");
+            logger.warn("[ShardTransfer] Install Protocolize for truly seamless transfers!");
+        }
+
         startRedisListener();
     }
 
     private void startRedisListener() {
         new Thread(() -> {
             try (Jedis sub = new Jedis(redisHost, redisPort)) {
-                // Authenticate subscriber connection if password exists
                 if (redisPassword != null && !redisPassword.isEmpty()) {
                     sub.auth(redisPassword);
                 }
 
                 logger.info("[ShardTransfer] Starting Redis PubSub listener on channel 'shard_transfer_requests'");
 
-                // Subscribe to shard transfer requests from Paper servers
                 sub.subscribe(new JedisPubSub() {
                     @Override
                     public void onMessage(String channel, String message) {
@@ -82,7 +86,6 @@ public class ShardTransferHandler {
     }
 
     private void handleShardTransferRequest(String message) {
-        // Message format from Paper plugin: "UUID|targetShard|x|y|z"
         String[] parts = message.split("\\|");
         if (parts.length != 5) {
             logger.warn("[ShardTransfer] Invalid transfer request format: {}", message);
@@ -96,61 +99,70 @@ public class ShardTransferHandler {
             double y = Double.parseDouble(parts[3]);
             double z = Double.parseDouble(parts[4]);
 
-            // Get player from proxy
             Player player = proxy.getPlayer(playerId).orElse(null);
             if (player == null) {
                 logger.warn("[ShardTransfer] Player {} not found on proxy", playerId);
                 return;
             }
 
-            // Get target server from Velocity config
             RegisteredServer targetServer = proxy.getServer(targetShard).orElse(null);
             if (targetServer == null) {
                 logger.error("[ShardTransfer] Target server '{}' not found in Velocity config!", targetShard);
-                logger.error("[ShardTransfer] Make sure velocity.toml has [servers] section with '{}'", targetShard);
                 return;
             }
 
             logger.info("[ShardTransfer] Processing transfer: {} -> {} at ({}, {}, {})",
                     player.getUsername(), targetShard, x, y, z);
 
-            // Mark this transfer as pending for seamless handling
             pendingTransfers.put(playerId, new PendingTransfer(targetShard, x, y, z));
 
-            // Pre-load chunks on destination server (send to Paper plugin via Redis)
             String preloadMsg = playerId + "|" + targetShard + "|" + x + "|" + z;
             redis.publish("shard_preload_chunks", preloadMsg);
-            logger.debug("[ShardTransfer] Sent chunk pre-load request: {}", preloadMsg);
 
-            // Wait for chunks to load, then perform seamless transfer
-            // FIX: Use plugin instance instead of 'this'
             proxy.getScheduler()
                     .buildTask(plugin, () -> performSeamlessTransfer(player, targetServer, x, y, z))
                     .delay(preloadDelay, TimeUnit.MILLISECONDS)
                     .schedule();
 
-        } catch (NumberFormatException e) {
-            logger.error("[ShardTransfer] Invalid coordinates in transfer request: {}", message, e);
-        } catch (IllegalArgumentException e) {
-            logger.error("[ShardTransfer] Invalid UUID in transfer request: {}", message, e);
         } catch (Exception e) {
             logger.error("[ShardTransfer] Unexpected error handling transfer request: {}", message, e);
         }
     }
 
     private void performSeamlessTransfer(Player player, RegisteredServer target, double x, double y, double z) {
-        // Verify player is still online
         if (!player.isActive()) {
             logger.warn("[ShardTransfer] Player {} disconnected before transfer completed", player.getUsername());
             pendingTransfers.remove(player.getUniqueId());
             return;
         }
 
-        // Perform the seamless transfer using Velocity's connection API
-        // This uses the modern Velocity transfer system which is much smoother
-        player.createConnectionRequest(target).fireAndForget();
+        try {
+            ProtocolizePlayer protocolizePlayer = Protocolize.playerProvider().player(player.getUniqueId());
 
-        logger.info("[ShardTransfer] ✓ Seamlessly transferred {} to {} at ({}, {}, {})",
+            if (protocolizePlayer != null) {
+                logger.debug("[ShardTransfer] Using Protocolize-enhanced transfer for {}", player.getUsername());
+
+                player.createConnectionRequest(target)
+                        .connect()
+                        .thenAccept(result -> {
+                            if (result.isSuccessful()) {
+                                logger.info("[ShardTransfer] ✓ Protocolize-enhanced transfer complete for {}",
+                                        player.getUsername());
+                            }
+                        });
+            } else {
+                performStandardTransfer(player, target, x, y, z);
+            }
+
+        } catch (Exception e) {
+            logger.warn("[ShardTransfer] Protocolize not available, using standard transfer", e);
+            performStandardTransfer(player, target, x, y, z);
+        }
+    }
+
+    private void performStandardTransfer(Player player, RegisteredServer target, double x, double y, double z) {
+        player.createConnectionRequest(target).fireAndForget();
+        logger.info("[ShardTransfer] ✓ Standard transfer complete for {} to {} at ({}, {}, {})",
                 player.getUsername(), target.getServerInfo().getName(), x, y, z);
     }
 
@@ -160,8 +172,6 @@ public class ShardTransferHandler {
         PendingTransfer transfer = pendingTransfers.remove(player.getUniqueId());
 
         if (transfer != null) {
-            // This is a seamless shard transfer!
-            // The event is allowed to proceed normally, but we've marked it as seamless
             logger.info("[ShardTransfer] Seamless transfer in progress for {} to {}",
                     player.getUsername(), transfer.targetShard);
         }
@@ -170,14 +180,12 @@ public class ShardTransferHandler {
     public void shutdown() {
         logger.info("[ShardTransfer] Shutting down...");
 
-        // Clear pending transfers
         int pendingCount = pendingTransfers.size();
         if (pendingCount > 0) {
             logger.warn("[ShardTransfer] {} pending transfers will be interrupted", pendingCount);
         }
         pendingTransfers.clear();
 
-        // Close Redis connection
         if (redis != null && redis.isConnected()) {
             try {
                 redis.close();

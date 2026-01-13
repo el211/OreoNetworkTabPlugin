@@ -11,7 +11,6 @@ messages:
     enabled: false
     format: "<gray>{name}</gray> <dark_gray>»</dark_gray> <white>{to}</white>"
 
-# NEW:
 # Players who are currently on one of these servers will NOT receive join/quit/switch messages.
 # Example: exclude lobby players from network spam.
 serversException:
@@ -24,10 +23,10 @@ tab:
 
 # Seamless shard transfers (like Donut SMP)
 sharding:
-  enabled: true
+  enabled: false
   redis:
-    host: "88.99.150.35"
-    port: 25577
-    password: "ELIASps4"
+    host: ""
+    port:
+    password: ""
   # How long to wait for chunks to pre-load (milliseconds)
   preloadDelay: 100

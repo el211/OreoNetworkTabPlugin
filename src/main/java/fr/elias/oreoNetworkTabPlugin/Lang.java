@@ -51,9 +51,7 @@ public final class Lang {
     public int getInt(String path, int def) {
         return node(path).getInt(def);
     }
-    /**
-     * @return true if copied from jar resource, false if resource was not found
-     */
+
     private boolean copyDefaultLang() throws IOException {
         // IMPORTANT: lang.yml must exist in src/main/resources/lang.yml to be inside the jar
         try (InputStream in = getClass().getClassLoader().getResourceAsStream("lang.yml")) {
