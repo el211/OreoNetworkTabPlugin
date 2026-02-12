@@ -1,18 +1,37 @@
 messages:
   join:
     enabled: true
+
+    # If one matches, it overrides "format"
+    formats:
+      - permission: "oreo.rank.admin"
+        format: "<red>[ADMIN]</red> <white>{name}</white> <gray>joined the network</gray>"
+      - permission: "oreo.rank.vip"
+        format: "<gradient:#FFD700:#FF69B4>[VIP]</gradient> <white>{name}</white> <gray>joined the network</gray>"
+
+    # fallback if no rank matched
     format: "<gradient:#FF1493:#00FF7F>+</gradient> <white>{name}</white> <gray>joined the network</gray>"
 
   quit:
     enabled: true
+    formats:
+      - permission: "oreo.rank.admin"
+        format: "<red>[ADMIN]</red> <white>{name}</white> <gray>left the network</gray>"
+      - permission: "oreo.rank.vip"
+        format: "<gradient:#FFD700:#FF69B4>[VIP]</gradient> <white>{name}</white> <gray>left the network</gray>"
     format: "<gradient:#FF1493:#00FF7F>-</gradient> <white>{name}</white> <gray>left the network</gray>"
 
   switch:
     enabled: false
+    formats:
+      - permission: "oreo.rank.admin"
+        format: "<red>[ADMIN]</red> <white>{name}</white> <dark_gray>»</dark_gray> <white>{to}</white>"
+      - permission: "oreo.rank.vip"
+        format: "<gradient:#FFD700:#FF69B4>[VIP]</gradient> <white>{name}</white> <dark_gray>»</dark_gray> <white>{to}</white>"
     format: "<gray>{name}</gray> <dark_gray>»</dark_gray> <white>{to}</white>"
 
+
 # Players who are currently on one of these servers will NOT receive join/quit/switch messages.
-# Example: exclude lobby players from network spam.
 serversException:
   - "lobby"
 

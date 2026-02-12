@@ -22,9 +22,15 @@ import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import org.slf4j.Logger;
+import org.spongepowered.configurate.CommentedConfigurationNode;
 
 import java.nio.file.Path;
-import java.util.*;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Plugin(
@@ -38,13 +44,13 @@ public class OreoNetworkTabPlugin {
     private final ProxyServer proxy;
     private final Logger logger;
     private final Path dataDirectory;
+
     private ShardTransferHandler shardHandler;
 
     private final MiniMessage mm = MiniMessage.miniMessage();
     private Lang lang;
 
     private final Map<UUID, String> lastServer = new ConcurrentHashMap<>();
-
     private final Set<UUID> pendingFirstConnect = ConcurrentHashMap.newKeySet();
 
     @Inject
@@ -61,6 +67,9 @@ public class OreoNetworkTabPlugin {
 
         logger.info("[OreoNetworkTab] Initialized. Data folder: {}", dataDirectory.toAbsolutePath());
 
+        // ------------------------------------------------------------
+        // Sharding (optional)
+        // ------------------------------------------------------------
         if (lang.getBool("sharding.enabled", false)) {
             try {
                 String redisHost = lang.getString("sharding.redis.host", "localhost");
@@ -74,7 +83,7 @@ public class OreoNetworkTabPlugin {
                         this,
                         redisHost,
                         redisPort,
-                        redisPassword.isEmpty() ? null : redisPassword,  // String
+                        redisPassword.isEmpty() ? null : redisPassword,
                         preloadDelay
                 );
 
@@ -92,12 +101,16 @@ public class OreoNetworkTabPlugin {
             logger.info("[ShardTransfer] Players will see loading screens on shard transfers");
         }
 
+        // ------------------------------------------------------------
+        // Tab
+        // ------------------------------------------------------------
         if (isTabEnabled()) {
             updateAllTabs();
         } else {
             logger.info("[OreoNetworkTab] TAB handling disabled (tab.enabled: false).");
         }
     }
+
     @Subscribe
     public void onProxyShutdown(ProxyShutdownEvent event) {
         logger.info("[OreoNetworkTab] Shutting down...");
@@ -121,14 +134,16 @@ public class OreoNetworkTabPlugin {
 
         Player p = event.getPlayer();
 
-        // Broadcast quit network (to allowed recipients)
+        // Broadcast quit network (to allowed recipients), ranked support
         if (lang != null && lang.getBool("messages.quit.enabled", true)) {
-            String quitFmt = lang.getMini(
-                    "messages.quit.format",
+            String quitFmt = resolveRankedMessage(
+                    p,
+                    "messages.quit",
                     "<gradient:#FF1493:#00FF7F>-</gradient> <white>{name}</white> <gray>left the network</gray>"
             );
 
-            broadcastMini(braceToMiniPlaceholders(quitFmt),
+            broadcastMini(
+                    braceToMiniPlaceholders(quitFmt),
                     Placeholder.parsed("name", p.getUsername())
             );
         }
@@ -160,15 +175,17 @@ public class OreoNetworkTabPlugin {
                 .map(s -> s.getServerInfo().getName())
                 .orElse(unknown);
 
-        // 1) First server connect => fire JOIN message once (if enabled)
+        // 1) First server connect => fire JOIN message once (if enabled), ranked support
         if (pendingFirstConnect.remove(p.getUniqueId())) {
             if (lang != null && lang.getBool("messages.join.enabled", true)) {
-                String joinFmt = lang.getMini(
-                        "messages.join.format",
+                String joinFmt = resolveRankedMessage(
+                        p,
+                        "messages.join",
                         "<gradient:#FF1493:#00FF7F>+</gradient> <white>{name}</white> <gray>joined the network</gray>"
                 );
 
-                broadcastMini(braceToMiniPlaceholders(joinFmt),
+                broadcastMini(
+                        braceToMiniPlaceholders(joinFmt),
                         Placeholder.parsed("name", p.getUsername()),
                         Placeholder.parsed("to", to),
                         Placeholder.parsed("from", unknown)
@@ -177,6 +194,7 @@ public class OreoNetworkTabPlugin {
             return;
         }
 
+        // 2) Switch message (optional), ranked support
         if (lang == null || !lang.getBool("messages.switch.enabled", false)) return;
 
         String from = lastServer.getOrDefault(p.getUniqueId(), unknown);
@@ -184,19 +202,57 @@ public class OreoNetworkTabPlugin {
         if (from.equalsIgnoreCase(unknown)) return;
         if (from.equalsIgnoreCase(to)) return;
 
-        String fmt = lang.getMini(
-                "messages.switch.format",
+        String fmt = resolveRankedMessage(
+                p,
+                "messages.switch",
                 "<gray>{name}</gray> <dark_gray>»</dark_gray> <white>{to}</white>"
         );
 
-        broadcastMini(braceToMiniPlaceholders(fmt),
+        broadcastMini(
+                braceToMiniPlaceholders(fmt),
                 Placeholder.parsed("name", p.getUsername()),
                 Placeholder.parsed("to", to),
                 Placeholder.parsed("from", from)
         );
     }
 
+    // ----------------------------------------------------------------
+    // Ranked message resolver
+    // ----------------------------------------------------------------
+    /**
+     * Supports:
+     * messages.<type>.formats:
+     *   - permission: "oreo.rank.vip"
+     *     format: "..."
+     *
+     * Falls back to:
+     * messages.<type>.format
+     *
+     * And finally:
+     * defaultFallback (hardcoded default)
+     */
+    private String resolveRankedMessage(Player player, String basePath, String defaultFallback) {
+        if (lang == null) return defaultFallback;
 
+        // Try overrides: messages.<type>.formats
+        for (CommentedConfigurationNode entry : lang.getNodeList(basePath + ".formats")) {
+            String perm = entry.node("permission").getString();
+            String fmt = entry.node("format").getString();
+
+            if (perm != null && !perm.isBlank() && fmt != null && !fmt.isBlank()) {
+                if (player.hasPermission(perm)) {
+                    return fmt;
+                }
+            }
+        }
+
+        // Fallback: messages.<type>.format
+        return lang.getMini(basePath + ".format", defaultFallback);
+    }
+
+    // ----------------------------------------------------------------
+    // Broadcasting helpers
+    // ----------------------------------------------------------------
     private void broadcastMini(String mini) {
         Component c = mm.deserialize(mini);
         broadcastToAllowedPlayers(c);
@@ -214,7 +270,6 @@ public class OreoNetworkTabPlugin {
         }
     }
 
-
     private boolean isRecipientExcepted(Player recipient) {
         if (lang == null) return false;
 
@@ -231,7 +286,6 @@ public class OreoNetworkTabPlugin {
         return false;
     }
 
-
     private String braceToMiniPlaceholders(String s) {
         if (s == null || s.isEmpty()) return s;
         return s.replace("{name}", "<name>")
@@ -239,7 +293,9 @@ public class OreoNetworkTabPlugin {
                 .replace("{from}", "<from>");
     }
 
-
+    // ----------------------------------------------------------------
+    // Tab logic
+    // ----------------------------------------------------------------
     private void updateAllTabs() {
         if (!isTabEnabled()) return;
 

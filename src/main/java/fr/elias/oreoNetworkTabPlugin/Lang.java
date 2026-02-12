@@ -62,6 +62,11 @@ public final class Lang {
             return true;
         }
     }
+    public java.util.List<CommentedConfigurationNode> getNodeList(String path) {
+        CommentedConfigurationNode n = node(path);
+        if (n == null || n.virtual()) return java.util.List.of();
+        return n.childrenList();
+    }
 
     private void writeFallbackLang() throws IOException {
         String content =
