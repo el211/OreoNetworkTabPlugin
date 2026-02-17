@@ -40,6 +40,21 @@ tab:
   showServerInName: true
   unknownServerName: "unknown"
 
+
+# This tells OreoNetworkTab to publish player counts to RabbitMQ so that
+# %oreo_crossserver_players_total% and %oreo_server_players_total% work
+# instantly on backend servers without querying the proxy.
+#
+# Use the SAME URI as in your OreoEssentials config.yml (rabbitmq.uri).
+# No new infrastructure needed.
+
+placeholders:
+  rabbitmq:
+    enabled: true
+    uri: "amqp://user:password@localhost:5672/vhost"
+
+
+
 # Seamless shard transfers (like Donut SMP)
 sharding:
   enabled: false

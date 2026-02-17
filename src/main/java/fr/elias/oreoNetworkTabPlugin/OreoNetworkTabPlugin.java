@@ -1,4 +1,3 @@
-// File: src/main/java/fr/elias/oreoNetworkTabPlugin/OreoNetworkTabPlugin.java
 package fr.elias.oreoNetworkTabPlugin;
 
 import com.google.inject.Inject;
@@ -47,6 +46,11 @@ public class OreoNetworkTabPlugin {
 
     private ShardTransferHandler shardHandler;
 
+    // Publishes player counts to RabbitMQ so OreoEssentials backend servers
+    // can serve %oreo_crossserver_players_total% and %oreo_server_players_total%
+    // via PlaceholderAPI with zero cross-server query latency.
+    private RabbitMQCountPublisher countPublisher;
+
     private final MiniMessage mm = MiniMessage.miniMessage();
     private Lang lang;
 
@@ -60,6 +64,10 @@ public class OreoNetworkTabPlugin {
         this.dataDirectory = dataDirectory;
     }
 
+    // -------------------------------------------------------------------------
+    // Lifecycle
+    // -------------------------------------------------------------------------
+
     @Subscribe
     public void onProxyInit(ProxyInitializeEvent event) {
         this.lang = new Lang(logger, dataDirectory);
@@ -67,22 +75,17 @@ public class OreoNetworkTabPlugin {
 
         logger.info("[OreoNetworkTab] Initialized. Data folder: {}", dataDirectory.toAbsolutePath());
 
-        // ------------------------------------------------------------
-        // Sharding (optional)
-        // ------------------------------------------------------------
+        // ── Sharding ──────────────────────────────────────────────────────────
         if (lang.getBool("sharding.enabled", false)) {
             try {
-                String redisHost = lang.getString("sharding.redis.host", "localhost");
-                int redisPort = lang.getInt("sharding.redis.port", 6379);
+                String redisHost     = lang.getString("sharding.redis.host", "localhost");
+                int    redisPort     = lang.getInt("sharding.redis.port", 6379);
                 String redisPassword = lang.getString("sharding.redis.password", "");
-                int preloadDelay = lang.getInt("sharding.preloadDelay", 100);
+                int    preloadDelay  = lang.getInt("sharding.preloadDelay", 100);
 
                 this.shardHandler = new ShardTransferHandler(
-                        proxy,
-                        logger,
-                        this,
-                        redisHost,
-                        redisPort,
+                        proxy, logger, this,
+                        redisHost, redisPort,
                         redisPassword.isEmpty() ? null : redisPassword,
                         preloadDelay
                 );
@@ -101,9 +104,43 @@ public class OreoNetworkTabPlugin {
             logger.info("[ShardTransfer] Players will see loading screens on shard transfers");
         }
 
-        // ------------------------------------------------------------
-        // Tab
-        // ------------------------------------------------------------
+        // ── RabbitMQ player-count publisher ───────────────────────────────────
+        // Config block: placeholders.rabbitmq in lang.yml
+        // Uses the same RabbitMQ URI as OreoEssentials — no extra infrastructure.
+        //
+        // Enables on every OreoEssentials backend server:
+        //   %oreo_crossserver_players_total%   — total across the whole network
+        //   %oreo_server_players_total%         — players on this specific server
+        //   %oreo_server_players_<name>%        — players on any named server
+        if (lang.getBool("placeholders.rabbitmq.enabled", false)) {
+            String uri = lang.getString("placeholders.rabbitmq.uri", "");
+            if (uri.isBlank()) {
+                logger.warn("[CountPublisher] placeholders.rabbitmq.uri is empty — publisher disabled.");
+                logger.warn("[CountPublisher] Add to lang.yml:  placeholders.rabbitmq.uri: \"amqp://user:pass@host/vhost\"");
+            } else {
+                this.countPublisher = new RabbitMQCountPublisher(proxy, logger, uri);
+                if (countPublisher.start()) {
+                    logger.info("[CountPublisher] Publishing player counts via exchange '{}'",
+                            RabbitMQCountPublisher.EXCHANGE_NAME);
+                    logger.info("[CountPublisher] Backend PAPI placeholders now available:");
+                    logger.info("[CountPublisher]   %oreo_crossserver_players_total%");
+                    logger.info("[CountPublisher]   %oreo_server_players_total%");
+                    logger.info("[CountPublisher]   %oreo_server_players_<name>%");
+                } else {
+                    logger.error("[CountPublisher] RabbitMQ connect failed — network count placeholders will return 0");
+                    this.countPublisher = null;
+                }
+            }
+        } else {
+            logger.info("[CountPublisher] Disabled (placeholders.rabbitmq.enabled: false)");
+            logger.info("[CountPublisher] To enable, add to lang.yml:");
+            logger.info("[CountPublisher]   placeholders:");
+            logger.info("[CountPublisher]     rabbitmq:");
+            logger.info("[CountPublisher]       enabled: true");
+            logger.info("[CountPublisher]       uri: \"amqp://user:pass@host/vhost\"");
+        }
+
+        // ── Tab ───────────────────────────────────────────────────────────────
         if (isTabEnabled()) {
             updateAllTabs();
         } else {
@@ -115,17 +152,23 @@ public class OreoNetworkTabPlugin {
     public void onProxyShutdown(ProxyShutdownEvent event) {
         logger.info("[OreoNetworkTab] Shutting down...");
 
-        if (shardHandler != null) {
-            shardHandler.shutdown();
-        }
+        if (shardHandler   != null) shardHandler.shutdown();
+        if (countPublisher != null) countPublisher.shutdown();
 
         logger.info("[OreoNetworkTab] Shutdown complete");
     }
+
+    // -------------------------------------------------------------------------
+    // Player events
+    // -------------------------------------------------------------------------
 
     @Subscribe
     public void onJoin(PostLoginEvent event) {
         if (isTabEnabled()) updateAllTabs();
         pendingFirstConnect.add(event.getPlayer().getUniqueId());
+
+        // Push counts immediately — don't wait for the 1 s heartbeat tick
+        if (countPublisher != null) countPublisher.publishNow();
     }
 
     @Subscribe
@@ -134,14 +177,12 @@ public class OreoNetworkTabPlugin {
 
         Player p = event.getPlayer();
 
-        // Broadcast quit network (to allowed recipients), ranked support
         if (lang != null && lang.getBool("messages.quit.enabled", true)) {
             String quitFmt = resolveRankedMessage(
                     p,
                     "messages.quit",
                     "<gradient:#FF1493:#00FF7F>-</gradient> <white>{name}</white> <gray>left the network</gray>"
             );
-
             broadcastMini(
                     braceToMiniPlaceholders(quitFmt),
                     Placeholder.parsed("name", p.getUsername())
@@ -150,11 +191,14 @@ public class OreoNetworkTabPlugin {
 
         lastServer.remove(p.getUniqueId());
         pendingFirstConnect.remove(p.getUniqueId());
+
+        // Network total drops immediately on disconnect
+        if (countPublisher != null) countPublisher.publishNow();
     }
 
     @Subscribe
     public void onPreConnect(ServerPreConnectEvent event) {
-        Player p = event.getPlayer();
+        Player p       = event.getPlayer();
         String unknown = getUnknownServerName();
 
         String from = p.getCurrentServer()
@@ -168,14 +212,18 @@ public class OreoNetworkTabPlugin {
     public void onServerSwitch(ServerPostConnectEvent event) {
         if (isTabEnabled()) updateAllTabs();
 
-        Player p = event.getPlayer();
+        Player p       = event.getPlayer();
         String unknown = getUnknownServerName();
 
         String to = p.getCurrentServer()
                 .map(s -> s.getServerInfo().getName())
                 .orElse(unknown);
 
-        // 1) First server connect => fire JOIN message once (if enabled), ranked support
+        // Per-server counts change on every switch — push immediately so
+        // %oreo_server_players_<name>% reflects the new state without delay
+        if (countPublisher != null) countPublisher.publishNow();
+
+        // First connection to any server → fire JOIN message
         if (pendingFirstConnect.remove(p.getUniqueId())) {
             if (lang != null && lang.getBool("messages.join.enabled", true)) {
                 String joinFmt = resolveRankedMessage(
@@ -183,130 +231,125 @@ public class OreoNetworkTabPlugin {
                         "messages.join",
                         "<gradient:#FF1493:#00FF7F>+</gradient> <white>{name}</white> <gray>joined the network</gray>"
                 );
-
                 broadcastMini(
                         braceToMiniPlaceholders(joinFmt),
                         Placeholder.parsed("name", p.getUsername()),
-                        Placeholder.parsed("to", to),
+                        Placeholder.parsed("to",   to),
                         Placeholder.parsed("from", unknown)
                 );
             }
             return;
         }
 
-        // 2) Switch message (optional), ranked support
+        // Subsequent server switches → optional switch message
         if (lang == null || !lang.getBool("messages.switch.enabled", false)) return;
 
         String from = lastServer.getOrDefault(p.getUniqueId(), unknown);
-
         if (from.equalsIgnoreCase(unknown)) return;
-        if (from.equalsIgnoreCase(to)) return;
+        if (from.equalsIgnoreCase(to))      return;
 
         String fmt = resolveRankedMessage(
                 p,
                 "messages.switch",
                 "<gray>{name}</gray> <dark_gray>»</dark_gray> <white>{to}</white>"
         );
-
         broadcastMini(
                 braceToMiniPlaceholders(fmt),
                 Placeholder.parsed("name", p.getUsername()),
-                Placeholder.parsed("to", to),
+                Placeholder.parsed("to",   to),
                 Placeholder.parsed("from", from)
         );
     }
 
-    // ----------------------------------------------------------------
+    // -------------------------------------------------------------------------
     // Ranked message resolver
-    // ----------------------------------------------------------------
+    // -------------------------------------------------------------------------
+
     /**
-     * Supports:
-     * messages.<type>.formats:
-     *   - permission: "oreo.rank.vip"
-     *     format: "..."
+     * Resolves a message with per-rank override support.
      *
-     * Falls back to:
-     * messages.<type>.format
+     * Config format:
+     * <pre>
+     * messages:
+     *   join:
+     *     enabled: true
+     *     formats:
+     *       - permission: "oreo.rank.vip"
+     *         format: "<gold>[VIP]</gold> {name} joined"
+     *       - permission: "oreo.rank.admin"
+     *         format: "<red>[ADMIN]</red> {name} joined"
+     *     format: "{name} joined"   # default fallback
+     * </pre>
      *
-     * And finally:
-     * defaultFallback (hardcoded default)
+     * Iterates formats in order — first matching permission wins.
+     * Falls back to {@code messages.<type>.format}, then {@code defaultFallback}.
      */
     private String resolveRankedMessage(Player player, String basePath, String defaultFallback) {
         if (lang == null) return defaultFallback;
 
-        // Try overrides: messages.<type>.formats
         for (CommentedConfigurationNode entry : lang.getNodeList(basePath + ".formats")) {
             String perm = entry.node("permission").getString();
-            String fmt = entry.node("format").getString();
-
+            String fmt  = entry.node("format").getString();
             if (perm != null && !perm.isBlank() && fmt != null && !fmt.isBlank()) {
-                if (player.hasPermission(perm)) {
-                    return fmt;
-                }
+                if (player.hasPermission(perm)) return fmt;
             }
         }
 
-        // Fallback: messages.<type>.format
         return lang.getMini(basePath + ".format", defaultFallback);
     }
 
-    // ----------------------------------------------------------------
+    // -------------------------------------------------------------------------
     // Broadcasting helpers
-    // ----------------------------------------------------------------
+    // -------------------------------------------------------------------------
+
     private void broadcastMini(String mini) {
-        Component c = mm.deserialize(mini);
-        broadcastToAllowedPlayers(c);
+        broadcastToAllowedPlayers(mm.deserialize(mini));
     }
 
     private void broadcastMini(String mini, TagResolver... resolvers) {
-        Component c = mm.deserialize(mini, resolvers);
-        broadcastToAllowedPlayers(c);
+        broadcastToAllowedPlayers(mm.deserialize(mini, resolvers));
     }
 
     private void broadcastToAllowedPlayers(Component component) {
         for (Player pl : proxy.getAllPlayers()) {
-            if (isRecipientExcepted(pl)) continue;
-            pl.sendMessage(component);
+            if (!isRecipientExcepted(pl)) pl.sendMessage(component);
         }
     }
 
     private boolean isRecipientExcepted(Player recipient) {
         if (lang == null) return false;
-
         List<String> except = lang.getStringList("serversException");
         if (except == null || except.isEmpty()) return false;
-
         String srv = recipient.getCurrentServer()
                 .map(cs -> cs.getServerInfo().getName())
                 .orElse(getUnknownServerName());
-
         for (String s : except) {
             if (s != null && s.equalsIgnoreCase(srv)) return true;
         }
         return false;
     }
 
+    /**
+     * Converts {name}/{to}/{from} brace-style placeholders to MiniMessage tag equivalents
+     * so they can be resolved by {@link Placeholder#parsed}.
+     */
     private String braceToMiniPlaceholders(String s) {
         if (s == null || s.isEmpty()) return s;
         return s.replace("{name}", "<name>")
-                .replace("{to}", "<to>")
+                .replace("{to}",   "<to>")
                 .replace("{from}", "<from>");
     }
 
-    // ----------------------------------------------------------------
-    // Tab logic
-    // ----------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // Tab list
+    // -------------------------------------------------------------------------
+
     private void updateAllTabs() {
         if (!isTabEnabled()) return;
 
         Collection<Player> players = proxy.getAllPlayers();
-
         for (Player viewer : players) {
-            TabList tab = viewer.getTabList();
-
-            // This is what overrides other tab systems:
-            tab.clearAll();
-
+            viewer.getTabList().clearAll();
             for (Player target : players) {
                 addOrUpdateEntry(viewer, target);
             }
@@ -314,48 +357,42 @@ public class OreoNetworkTabPlugin {
     }
 
     private void addOrUpdateEntry(Player viewer, Player target) {
-        if (!isTabEnabled()) return;
-
-        TabList tab = viewer.getTabList();
-
-        Optional<TabListEntry> existing = tab.getEntry(target.getUniqueId());
-        existing.ifPresent(entry -> tab.removeEntry(entry.getProfile().getId()));
-
+        TabList tab    = viewer.getTabList();
         String unknown = getUnknownServerName();
+
+        tab.getEntry(target.getUniqueId())
+                .ifPresent(e -> tab.removeEntry(e.getProfile().getId()));
+
         String serverName = target.getCurrentServer()
                 .map(conn -> conn.getServerInfo().getName())
                 .orElse(unknown);
 
         boolean showServer = lang != null && lang.getBool("tab.showServerInName", true);
 
-        Component displayName;
-        if (showServer) {
-            displayName = Component.text()
-                    .append(Component.text(target.getUsername(), NamedTextColor.WHITE))
-                    .append(Component.space())
-                    .append(Component.text("(", NamedTextColor.DARK_GRAY))
-                    .append(Component.text(serverName, NamedTextColor.GRAY))
-                    .append(Component.text(")", NamedTextColor.DARK_GRAY))
-                    .build();
-        } else {
-            displayName = Component.text(target.getUsername(), NamedTextColor.WHITE);
-        }
+        Component displayName = showServer
+                ? Component.text()
+                .append(Component.text(target.getUsername(), NamedTextColor.WHITE))
+                .append(Component.space())
+                .append(Component.text("(",        NamedTextColor.DARK_GRAY))
+                .append(Component.text(serverName, NamedTextColor.GRAY))
+                .append(Component.text(")",        NamedTextColor.DARK_GRAY))
+                .build()
+                : Component.text(target.getUsername(), NamedTextColor.WHITE);
 
-        GameProfile profile = target.getGameProfile();
-        int ping = (int) Math.max(0, Math.min(Integer.MAX_VALUE, target.getPing()));
-
-        TabListEntry entry = TabListEntry.builder()
+        tab.addEntry(TabListEntry.builder()
                 .tabList(tab)
-                .profile(profile)
+                .profile(target.getGameProfile())
                 .displayName(displayName)
-                .latency(ping)
+                .latency((int) Math.max(0, Math.min(Integer.MAX_VALUE, target.getPing())))
                 .gameMode(0)
                 .listed(true)
                 .showHat(true)
-                .build();
-
-        tab.addEntry(entry);
+                .build());
     }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
 
     private boolean isTabEnabled() {
         return lang != null && lang.getBool("tab.enabled", true);
