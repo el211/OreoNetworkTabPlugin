@@ -1,0 +1,51 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# OreoNetworkTab — settings.yml
+# Supports full MiniMessage syntax including gradient hex colors:
+#   <gradient:#RRGGBB:#RRGGBB>text</gradient>
+# ──────────────────────────────────────────────────────────────────────────────
+
+motd:
+  enabled: true
+  # First line of the MOTD (supports MiniMessage with gradient hex)
+  line1: "<gradient:#FF0066:#FF7700:#FFFF00:#00FF88:#00CCFF:#CC00FF>✦ Oreo Network ✦</gradient>"
+  # Second line of the MOTD
+  line2: "<gray>The best experience — <white>play.oreo.fr</white></gray>"
+
+fake-players:
+  enabled: true
+  # How many extra players to add on top of the real online count
+  extra-count: 47
+  # How many names to display in the server-list hover panel at once
+  shown-count: 4
+  # How often (in minutes) to rotate which names are shown
+  rotate-interval-minutes: 5
+
+  # Show fake players inside the in-game tab list
+  show-in-tablist: true
+  # How many fake names to show in the tab list (uses the same rotating offset)
+  tablist-shown-count: 5
+  # Fake server name shown next to fake players in the tab list (leave blank to hide)
+  tablist-fake-server: "lobby"
+
+  # Pool of names to cycle through in the hover list
+  names:
+    - "CoolPlayer2009"
+    - "xX_Builder_Xx"
+    - "NightHawk99"
+    - "StarCraft_Pro"
+    - "DragonSlayer"
+    - "IceQueen404"
+    - "FireLord777"
+    - "MegaMiner"
+    - "SkyWalker42"
+    - "ProPvPer"
+    - "PixelWizard"
+    - "ThunderBolt"
+    - "CrystalKnight"
+    - "ShadowRogue"
+    - "LegendaryAce"
+    - "VoidWalker"
+    - "StormBringer"
+    - "GoldenArrow"
+    - "IronFist"
+    - "SilverWolf"

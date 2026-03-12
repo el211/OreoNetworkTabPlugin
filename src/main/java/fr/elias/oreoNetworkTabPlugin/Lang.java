@@ -32,9 +32,9 @@ public final class Lang {
                 if (!copyDefaultLang()) {
                     // If resource missing in jar, create a minimal file so user isn't stuck
                     writeFallbackLang();
-                    logger.warn("[OreoNetworkTab] lang.yml resource missing in jar, created fallback lang.yml at {}", langFile.toAbsolutePath());
+                    logger.warn("[OreoVelocity] lang.yml resource missing in jar, created fallback lang.yml at {}", langFile.toAbsolutePath());
                 } else {
-                    logger.info("[OreoNetworkTab] Created default lang.yml at {}", langFile.toAbsolutePath());
+                    logger.info("[OreoVelocity] Created default lang.yml at {}", langFile.toAbsolutePath());
                 }
             }
 
@@ -44,7 +44,7 @@ public final class Lang {
 
             this.root = loader.load();
         } catch (Exception e) {
-            logger.error("[OreoNetworkTab] Failed to load lang.yml", e);
+            logger.error("[OreoVelocity] Failed to load lang.yml", e);
             this.root = CommentedConfigurationNode.root();
         }
     }

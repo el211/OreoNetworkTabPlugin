@@ -7,6 +7,7 @@ import com.velocitypowered.api.event.connection.PostLoginEvent;
 import com.velocitypowered.api.event.player.ServerPostConnectEvent;
 import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
+import com.velocitypowered.api.event.proxy.ProxyPingEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
@@ -14,6 +15,7 @@ import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.player.TabList;
 import com.velocitypowered.api.proxy.player.TabListEntry;
+import com.velocitypowered.api.proxy.server.ServerPing;
 import com.velocitypowered.api.util.GameProfile;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -24,6 +26,7 @@ import org.slf4j.Logger;
 import org.spongepowered.configurate.CommentedConfigurationNode;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -31,10 +34,14 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Plugin(
-        id = "oreo-network-tab",
-        name = "OreoNetworkTab",
+        id = "oreo-velocity",
+        name = "OreoVelocity",
         version = "1.0.0",
         authors = {"Elias"}
 )
@@ -53,6 +60,11 @@ public class OreoNetworkTabPlugin {
 
     private final MiniMessage mm = MiniMessage.miniMessage();
     private Lang lang;
+    private Settings settings;
+
+    // Fake player rotation — offset increments on every rotation tick
+    private final AtomicInteger fakePingOffset = new AtomicInteger(0);
+    private ScheduledExecutorService fakePlayerRotator;
 
     private final Map<UUID, String> lastServer = new ConcurrentHashMap<>();
     private final Set<UUID> pendingFirstConnect = ConcurrentHashMap.newKeySet();
@@ -73,7 +85,28 @@ public class OreoNetworkTabPlugin {
         this.lang = new Lang(logger, dataDirectory);
         this.lang.load();
 
-        logger.info("[OreoNetworkTab] Initialized. Data folder: {}", dataDirectory.toAbsolutePath());
+        this.settings = new Settings(logger, dataDirectory);
+        this.settings.load();
+
+        logger.info("[OreoVelocity] Initialized. Data folder: {}", dataDirectory.toAbsolutePath());
+
+        // ── MOTD / Fake players ───────────────────────────────────────────────
+        if (settings.getBool("fake-players.enabled", false)) {
+            int intervalMin = settings.getInt("fake-players.rotate-interval-minutes", 5);
+            fakePlayerRotator = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "oreo-fake-player-rotator");
+                t.setDaemon(true);
+                return t;
+            });
+            fakePlayerRotator.scheduleAtFixedRate(
+                    fakePingOffset::incrementAndGet,
+                    intervalMin, intervalMin, TimeUnit.MINUTES
+            );
+            logger.info("[MOTD] Fake player names rotate every {} minute(s)", intervalMin);
+        }
+        if (settings.getBool("motd.enabled", false)) {
+            logger.info("[MOTD] Custom MOTD enabled");
+        }
 
         // ── Sharding ──────────────────────────────────────────────────────────
         if (lang.getBool("sharding.enabled", false)) {
@@ -144,18 +177,67 @@ public class OreoNetworkTabPlugin {
         if (isTabEnabled()) {
             updateAllTabs();
         } else {
-            logger.info("[OreoNetworkTab] TAB handling disabled (tab.enabled: false).");
+            logger.info("[OreoVelocity] TAB handling disabled (tab.enabled: false).");
         }
     }
 
     @Subscribe
     public void onProxyShutdown(ProxyShutdownEvent event) {
-        logger.info("[OreoNetworkTab] Shutting down...");
+        logger.info("[OreoVelocity] Shutting down...");
 
-        if (shardHandler   != null) shardHandler.shutdown();
-        if (countPublisher != null) countPublisher.shutdown();
+        if (shardHandler       != null) shardHandler.shutdown();
+        if (countPublisher     != null) countPublisher.shutdown();
+        if (fakePlayerRotator  != null) fakePlayerRotator.shutdown();
 
-        logger.info("[OreoNetworkTab] Shutdown complete");
+        logger.info("[OreoVelocity] Shutdown complete");
+    }
+
+    // -------------------------------------------------------------------------
+    // Server list ping (MOTD + fake players)
+    // -------------------------------------------------------------------------
+
+    @Subscribe
+    public void onPing(ProxyPingEvent event) {
+        if (settings == null) return;
+
+        ServerPing.Builder builder = event.getPing().asBuilder();
+
+        // ── MOTD ─────────────────────────────────────────────────────────────
+        if (settings.getBool("motd.enabled", false)) {
+            String line1 = settings.getString("motd.line1", "");
+            String line2 = settings.getString("motd.line2", "");
+            Component motd = mm.deserialize(line1);
+            if (!line2.isBlank()) {
+                motd = motd.append(Component.newline()).append(mm.deserialize(line2));
+            }
+            builder.description(motd);
+        }
+
+        // ── Fake players ──────────────────────────────────────────────────────
+        if (settings.getBool("fake-players.enabled", false)) {
+            int extraCount  = settings.getInt("fake-players.extra-count", 0);
+            int shownCount  = settings.getInt("fake-players.shown-count", 4);
+            List<String> names = settings.getStringList("fake-players.names");
+
+            // Inflate the online player count
+            int realOnline = event.getPing().getPlayers()
+                    .map(ServerPing.Players::getOnline)
+                    .orElse(proxy.getPlayerCount());
+            builder.onlinePlayers(realOnline + extraCount);
+
+            // Rotate the hover sample list
+            if (!names.isEmpty() && shownCount > 0) {
+                int offset = Math.abs(fakePingOffset.get()) % names.size();
+                List<ServerPing.SamplePlayer> sample = new ArrayList<>();
+                for (int i = 0; i < Math.min(shownCount, names.size()); i++) {
+                    String name = names.get((offset + i) % names.size());
+                    sample.add(new ServerPing.SamplePlayer(name, UUID.randomUUID()));
+                }
+                builder.samplePlayers(sample.toArray(new ServerPing.SamplePlayer[0]));
+            }
+        }
+
+        event.setPing(builder.build());
     }
 
     // -------------------------------------------------------------------------
@@ -353,6 +435,58 @@ public class OreoNetworkTabPlugin {
             for (Player target : players) {
                 addOrUpdateEntry(viewer, target);
             }
+            addFakeTabEntries(viewer);
+        }
+    }
+
+    private void addFakeTabEntries(Player viewer) {
+        if (settings == null) return;
+        if (!settings.getBool("fake-players.enabled", false)) return;
+        if (!settings.getBool("fake-players.show-in-tablist", false)) return;
+
+        List<String> names     = settings.getStringList("fake-players.names");
+        int shownCount         = settings.getInt("fake-players.tablist-shown-count", 5);
+        String fakeServer      = settings.getString("fake-players.tablist-fake-server", "");
+        boolean showServer     = lang != null && lang.getBool("tab.showServerInName", true);
+
+        if (names.isEmpty() || shownCount <= 0) return;
+
+        int offset = Math.abs(fakePingOffset.get()) % names.size();
+        TabList tab = viewer.getTabList();
+
+        for (int i = 0; i < Math.min(shownCount, names.size()); i++) {
+            String name = names.get((offset + i) % names.size());
+
+            // Stable UUID derived from the name — prevents flicker on tab refresh
+            UUID fakeId = UUID.nameUUIDFromBytes(("fake:" + name).getBytes());
+
+            // Skip if this UUID is already in the tab list (shouldn't happen after clearAll, but safety)
+            if (tab.getEntry(fakeId).isPresent()) continue;
+
+            Component displayName;
+            if (showServer && !fakeServer.isBlank()) {
+                displayName = Component.text()
+                        .append(Component.text(name, NamedTextColor.WHITE))
+                        .append(Component.space())
+                        .append(Component.text("(",         NamedTextColor.DARK_GRAY))
+                        .append(Component.text(fakeServer,  NamedTextColor.GRAY))
+                        .append(Component.text(")",         NamedTextColor.DARK_GRAY))
+                        .build();
+            } else {
+                displayName = Component.text(name, NamedTextColor.WHITE);
+            }
+
+            GameProfile fakeProfile = new GameProfile(fakeId, name, List.of());
+
+            tab.addEntry(TabListEntry.builder()
+                    .tabList(tab)
+                    .profile(fakeProfile)
+                    .displayName(displayName)
+                    .latency(0)
+                    .gameMode(0)
+                    .listed(true)
+                    .showHat(true)
+                    .build());
         }
     }
 

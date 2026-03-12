@@ -1,6 +1,6 @@
 {
-  "id": "oreo-network-tab",
-  "name": "OreoNetworkTab",
+  "id": "oreo-velocity",
+  "name": "OreoVelocity",
   "version": "2.0.0",
   "description": "Global network tablist formatter for Oreo Studios",
   "authors": ["Elias"],

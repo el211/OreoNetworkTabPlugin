@@ -95,7 +95,7 @@ public class RabbitMQCountPublisher {
             factory.setAutomaticRecoveryEnabled(true);
             factory.setNetworkRecoveryInterval(5_000);
 
-            connection = factory.newConnection("OreoNetworkTab-CountPublisher");
+            connection = factory.newConnection("OreoVelocity-CountPublisher");
             channel    = connection.createChannel();
 
             channel.exchangeDeclare(EXCHANGE_NAME, BuiltinExchangeType.FANOUT, true);
